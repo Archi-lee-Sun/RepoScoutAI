@@ -18,3 +18,26 @@ class Candidate:
     explanation_ka: str | None = None 
 
 
+class PollerState:
+    def __init__(self , file_path: str = "state.json"):
+        self.file_path = Path(file_path)
+        self._data = self._load()
+
+    def _load(self) -> dict :
+        if not self.file_path.exists():
+            return {}
+        with open(self.file_path , "r" , encoding="utf-8") as f :
+            return json.load(f)
+
+    def _save(self) :
+        with open(self.file_path , "w" , encoding="utf-8") as f :
+            json.dump(self._data , f , indent=2)
+
+    def get_last_checked(self , cluster_name: str) -> str | None :
+        return self._data.get(cluster_name)
+
+    def update_last_checked(self , cluster_name , timestamp: str) :
+        self._data[cluster_name] = timestamp
+        self._save()
+
+

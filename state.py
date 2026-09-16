@@ -14,7 +14,7 @@ class Candidate:
 
     is_accepted: bool | None = None
     validation_reason: str | None = None
-    explanation_eg: str | None = None
+    explanation_en: str | None = None
     explanation_ka: str | None = None 
 
 
@@ -40,4 +40,33 @@ class PollerState:
         self._data[cluster_name] = timestamp
         self._save()
 
+
+class PreferenceMemory :
+    def __init__(self ,  file_path: str = "history.json") :
+        self.file_path = Path(file_path)
+        self._data = self._load()
+
+    def _load(self) -> dict :
+        if not self.file_path.exists():
+            return []
+        with open(self.file_path , "r" , encoding="utf-8") as f :
+            return json.load(f)
+
+    def _save(self) :
+        with open(self.file_path , "w" , encoding="utf-8") as f :
+            json.dump(self._data , f , indent=2)
+
+    def add_decision(self , full_name: str , url: str , decision: str , description: str , reason: str) :
+        record = {
+            "full_name" : full_name ,
+            "url" : url , 
+            "decision" : decision ,
+            "description" : description , 
+            "reason" : reason
+        }
+
+        self._data.append(record)
+        self._save()
+
+        
 

@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
+from pydantic import BaseModel
 
 @dataclass
 class Candidate:
@@ -16,6 +17,11 @@ class Candidate:
     validation_reason: str | None = None
     explanation_en: str | None = None
     explanation_ka: str | None = None
+
+
+class ValidatorDecision(BaseModel):
+    accept: bool
+    reason: str
 
 
 class PollerState:

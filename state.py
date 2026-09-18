@@ -18,12 +18,6 @@ class Candidate:
     explanation_en: str | None = None
     explanation_ka: str | None = None
 
-
-class ValidatorDecision(BaseModel):
-    accept: bool
-    reason: str
-
-
 class PollerState:
     def __init__(self, file_path: str = "state.json"):
         self.file_path = Path(file_path)

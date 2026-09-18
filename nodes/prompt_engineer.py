@@ -68,4 +68,4 @@ def generate_meta_prompt(preference_memory: PreferenceMemory) -> str:
   if not meta_prompt:
     raise EmptyLLMResponseError("The LLM returned empty text")
 
-  return meta_prompt
+  return meta_prompt 

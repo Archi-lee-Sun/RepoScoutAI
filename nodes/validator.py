@@ -51,7 +51,6 @@ def _format_candidate(candidate: Candidate) -> str:
     )),
     reraise=True,
 )
-
 def validate_candidate(candidate: Candidate, meta_prompt: str) :
     structured_llm = llm.with_structured_output(ValidatorDecision)
     fortmated_candidate = _format_candidate(candidate)

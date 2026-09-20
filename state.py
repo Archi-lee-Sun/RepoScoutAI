@@ -18,19 +18,6 @@ class Candidate:
     explanation_en: str | None = None
     explanation_ka: str | None = None
 
-    def to_dict(self) -> dict:
-        return {
-            "full_name": self.full_name,
-            "url": self.url,
-            "description": self.description,
-            "stars": self.stars,
-            "language": self.language,
-            "matched_clusters": self.matched_clusters,
-            "is_accepted": self.is_accepted,
-            "validation_reason": self.validation_reason,
-            "explanation_en": self.explanation_en,
-            "explanation_ka": self.explanation_ka,
-        }
 
 class PollerState:
     def __init__(self, file_path: str = "state.json"):

@@ -1,7 +1,8 @@
 import os
-import re
 from urllib.parse import quote
-
+import base64
+import logging
+from ..state import Candidate
 import requests
 from dotenv import load_dotenv
 
@@ -13,96 +14,169 @@ MAX_README_CHARS = 8000
 MAX_FILE_CHARS = 3000
 MAX_TREE_ENTRIES = 50
 
-CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".cs", ".cpp", ".c", ".kt", ".swift"}
+CONTENT_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".cs", ".cpp", ".c", ".kt", ".swift",
+    ".md", ".txt", ".yaml", ".yml", ".json", ".jinja", ".j2", ".prompt", ".toml",
+}
 SKIP_DIRS = {"node_modules", "vendor", "dist", "build", "tests", "test", "__tests__", ".github", "migrations"}
+PROMPT_KEYWORDS = ("prompt", "system", "agent", "template", "instruction")
+NOISE_NAMES = ("readme", "license", "changelog", "contributing", "code_of_conduct")
 
-_HEADERS = {
+HEADERS = {
     "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-
-def parse_repo_url(url: str) -> tuple[str, str]:
-    match = re.search(r"github\.com/([^/]+)/([^/#?]+)", url)
-    if not match:
-        raise ValueError(f"Not a GitHub repo URL: {url}")
-    owner, repo = match.groups()
-    return owner, repo.removesuffix(".git")
+logger = logging.getLogger(__name__)
 
 
-def _get(path: str, raw: bool = False):
-    """Returns None on 404, raises on other HTTP errors."""
-    headers = dict(_HEADERS)
-    headers["Accept"] = "application/vnd.github.raw+json" if raw else "application/vnd.github+json"
-    resp = requests.get(f"{API}{path}", headers=headers, timeout=15)
-    if resp.status_code == 404:
-        return None
-    resp.raise_for_status()
-    return resp.text if raw else resp.json()
+def get_readme(full_name : str) -> dict :
+    url = f"https://api.github.com/repos/{full_name}/readme"
+    try :
+        response  = requests.get(url , headers=HEADERS , timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        size = data["size"]
+
+        is_success = True if not size < 400 else False
+
+        if not is_success :
+            return {
+                "is_success" : False ,
+                "readme" : "" ,
+            }
+        else :
+            return {
+                "is_success" : True ,
+                "readme" : content[:8000] ,
+            }
+    except Exception as e :
+        logger.exception(f"[fetcher] failed to get readme for {full_name}")
+        return {
+            "is_success": False,
+            "readme": "",
+        }
 
 
-def fetch_readme(owner: str, repo: str) -> str | None:
-    text = _get(f"/repos/{owner}/{repo}/readme", raw=True)
-    return text[:MAX_README_CHARS] if text else None
+
+def get_tree(full_name: str) -> list[dict]:
+    url = f"https://api.github.com/repos/{full_name}/git/trees/HEAD?recursive=1"
+
+    try:
+        response = requests.get(url=url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("truncated"):
+            logger.warning(f"[fetcher] tree truncated for {full_name}")
+
+        return data["tree"]
+    except Exception:
+        logger.exception(f"[fetcher] failed to get tree for {full_name}")
+        return []
 
 
-def fetch_tree(owner: str, repo: str) -> tuple[list[dict], str | None]:
-    """Returns (tree entries, pushed_at). Uses the default branch."""
-    info = _get(f"/repos/{owner}/{repo}")
-    if not info:
-        return [], None
-    branch = info["default_branch"]
-    data = _get(f"/repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
-    return (data["tree"] if data else []), info.get("pushed_at")
+def format_tree_text(full_name: str , entries : list) -> list[dict] :
+    result = []
+    for entry in entries :
+        path = entry["path"]
+        url = f"https://api.github.com/repos/{full_name}/path"
+        try :
+            response = requests.get(url=url , headers=HEADERS , timeout=15)
+            response.raise_for_status()
+            content = base64.b64decode(response.json()["content"]).decode("utf-8")
+            result.append({
+                "name" : path ,
+                "content" : content ,
+            })
+        except Exception as e :
+            logger.info()
+            result.append({
+                "name" : path ,
+                "content" : "" ,
+            })
+            continue
 
 
-def fetch_file(owner: str, repo: str, path: str) -> str | None:
-    text = _get(f"/repos/{owner}/{repo}/contents/{quote(path)}", raw=True)
-    return text[:MAX_FILE_CHARS] if text else None
+def format_tree_text(entries: list[dict]) -> str:
+    lines = []
+    for entry in entries:
+        path = entry["path"]
+        if path.count("/") > 1:
+            continue
+        if entry["type"] == "tree":
+            path += "/"
+        lines.append(path)
 
-
-def format_tree(tree: list[dict]) -> str:
-    """Top level plus one level down, capped, for the LLM."""
-    entries = sorted(e for e in tree if e["path"].count("/") <= 1)
-    lines = [e["path"] + ("/" if e["type"] == "tree" else "") for e in entries]
+    lines.sort()
     return "\n".join(lines[:MAX_TREE_ENTRIES])
 
 
-def pick_code_files(tree: list[dict], limit: int = 3) -> list[str]:
-    """Substance first: the largest real source files, skipping tests/vendor/etc."""
+def pick_files(entries: list[dict], limit: int = 3) -> list[str]:
     candidates = []
-    for e in tree:
-        if e["type"] != "blob":
+    for entry in entries:
+        if entry["type"] != "blob":
             continue
-        parts = e["path"].split("/")
-        ext = os.path.splitext(parts[-1])[1].lower()
-        if ext not in CODE_EXTENSIONS or any(p in SKIP_DIRS for p in parts[:-1]):
+
+        path = entry["path"]
+        parts = path.split("/")
+        filename = parts[-1].lower()
+
+        if os.path.splitext(filename)[1] not in CONTENT_EXTENSIONS:
             continue
-        if not 200 <= e.get("size", 0) <= 100_000:
+        if any(p in SKIP_DIRS for p in parts[:-1]):
             continue
-        candidates.append(e)
-    candidates.sort(key=lambda e: e["size"], reverse=True)
-    return [e["path"] for e in candidates[:limit]]
+        if filename.startswith(NOISE_NAMES) or filename.endswith(("lock.json", "lock.yaml")):
+            continue
+        if not 200 <= entry.get("size", 0) <= 100_000:
+            continue
+
+        has_keyword = any(k in path.lower() for k in PROMPT_KEYWORDS)
+        candidates.append((has_keyword, entry["size"], path))
+
+    candidates.sort(reverse=True)
+    return [path for _, _, path in candidates[:limit]]
 
 
-def fetch_repo_context(url: str) -> dict | None:
-    """README + tree + top code files. None if README is missing/too short."""
-    owner, repo = parse_repo_url(url)
+def get_file(full_name: str, path: str) -> str:
+    url = f"https://api.github.com/repos/{full_name}/contents/{quote(path)}"
+    headers = {**HEADERS, "Accept": "application/vnd.github.raw+json"}
 
-    readme = fetch_readme(owner, repo)
-    if not readme or len(readme.strip()) < MIN_README_CHARS:
-        return None
+    try:
+        response = requests.get(url=url, headers=headers, timeout=15)
+        response.raise_for_status()
+        response.encoding = "utf-8"
+        return response.text[:MAX_FILE_CHARS]
+    except Exception:
+        logger.exception(f"[fetcher] failed to get file {path} in {full_name}")
+        return ""
 
-    tree, pushed_at = fetch_tree(owner, repo)
-    code_files = {}
-    for path in pick_code_files(tree):
-        content = fetch_file(owner, repo, path)
-        if content:
-            code_files[path] = content
 
-    return {
-        "readme": readme,
-        "tree_text": format_tree(tree),
-        "code_files": code_files,
-        "pushed_at": pushed_at,
-    }
+def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
+    for candidate in candidates:
+        if not candidate.is_accepted:
+            continue
+
+        try:
+            readme = get_readme(candidate.full_name)
+            if not readme["is_success"]:
+                candidate.selector_accepted = False
+                candidate.selector_reason = "README missing or too short"
+                continue
+
+            candidate.readme = readme["readme"]
+
+            entries = get_tree(candidate.full_name)
+            candidate.tree_text = format_tree_text(entries)
+
+            for path in pick_files(entries):
+                content = get_file(candidate.full_name, path)
+                if content:
+                    candidate.code_files[path] = content
+        except Exception:
+            logger.exception(f"[fetcher] failed on {candidate.full_name}")
+
+    return candidates
+

@@ -1,8 +1,7 @@
 import json
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from dataclasses import dataclass , field
 from pathlib import Path
-from pydantic import BaseModel
+
 
 @dataclass
 class Candidate:
@@ -15,9 +14,15 @@ class Candidate:
 
     is_accepted: bool | None = None
     validation_reason: str | None = None
+
+    readme: str | None = None
+    tree_text: str | None = None
+    code_files: dict[str, str] = field(default_factory=dict)
+    selector_accepted: bool | None = None
+    selector_reason: str | None = None
+
     explanation_en: str | None = None
     explanation_ka: str | None = None
-
 
 class PollerState:
     def __init__(self, file_path: str = "state.json"):

@@ -2,7 +2,9 @@ import os
 from urllib.parse import quote
 import base64
 import logging
-from ..state import Candidate
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from state import Candidate
 import requests
 from dotenv import load_dotenv
 
@@ -40,7 +42,7 @@ def get_readme(full_name : str) -> dict :
         content = base64.b64decode(data["content"]).decode("utf-8")
         size = data["size"]
 
-        is_success = True if not size < 400 else False
+        is_success = True if not size < MIN_README_CHARS else False
 
         if not is_success :
             return {
@@ -50,9 +52,9 @@ def get_readme(full_name : str) -> dict :
         else :
             return {
                 "is_success" : True ,
-                "readme" : content[:8000] ,
+                "readme" : content[:MAX_README_CHARS] ,
             }
-    except Exception as e :
+    except Exception :
         logger.exception(f"[fetcher] failed to get readme for {full_name}")
         return {
             "is_success": False,
@@ -157,4 +159,3 @@ def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
             logger.exception(f"[fetcher] failed on {candidate.full_name}")
 
     return candidates
-

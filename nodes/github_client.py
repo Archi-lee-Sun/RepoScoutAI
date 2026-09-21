@@ -78,28 +78,6 @@ def get_tree(full_name: str) -> list[dict]:
         return []
 
 
-def format_tree_text(full_name: str , entries : list) -> list[dict] :
-    result = []
-    for entry in entries :
-        path = entry["path"]
-        url = f"https://api.github.com/repos/{full_name}/path"
-        try :
-            response = requests.get(url=url , headers=HEADERS , timeout=15)
-            response.raise_for_status()
-            content = base64.b64decode(response.json()["content"]).decode("utf-8")
-            result.append({
-                "name" : path ,
-                "content" : content ,
-            })
-        except Exception as e :
-            logger.info()
-            result.append({
-                "name" : path ,
-                "content" : "" ,
-            })
-            continue
-
-
 def format_tree_text(entries: list[dict]) -> str:
     lines = []
     for entry in entries:

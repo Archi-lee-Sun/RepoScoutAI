@@ -31,18 +31,18 @@ llm = ChatGoogleGenerativeAI(
 )
 structured_llm = llm.with_structured_output(Explainer)
 
-def _format_candidate(candidate: Candidate) :
-    tree = candidate.tree_text or "none available"
 
-    if candidate.code_files :
-        files = '\n\n'.join((
-            f"---{path}--- \n{content}"
-            for path , content in candidate.code_files.items()
-        ))
-    else :
-        files = "non Available"
 
-    return {
+def _format_candidate(candidate: Candidate) -> str:
+    if candidate.code_files:
+        files = "\n\n".join(
+            f"--- {path} ---\n{content}"
+            for path, content in candidate.code_files.items()
+        )
+    else:
+        files = "none available"
+
+    return (
         f"Name: {candidate.full_name}\n"
         f"URL: {candidate.url}\n"
         f"Description: {candidate.description}\n"
@@ -50,13 +50,12 @@ def _format_candidate(candidate: Candidate) :
         f"Language: {candidate.language}\n"
         f"Matched clusters: {', '.join(candidate.matched_clusters)}\n\n"
         f"=== README ===\n{candidate.readme}\n\n"
-        f"=== FILE TREE ===\n{tree}\n\n"
-        f"=== KEY FILES ===\n{files}\n"
-        f"=== SELECTOR DECISION ===\n{candidate.selector_accepted}\n"
-        f"=== SELECTOR REASON ===\n{candidate.selector_reason}\n"
-    }
+        f"=== KEY FILES ===\n{files}\n\n"
+        f"=== SELECTOR REASON ===\n{candidate.selector_reason}"
+    )
 
 
+    
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=4, max=16),
@@ -68,12 +67,12 @@ def _format_candidate(candidate: Candidate) :
 )
 def explain_repository(candidate : Candidate) :
     messages = [
-        SystemMessage(content=get_explainer_prompt) ,
+        SystemMessage(content=get_explainer_prompt()) ,
         HumanMessage(content=_format_candidate(candidate))
     ]
 
     result : Explainer = structured_llm.invoke(messages)
-    candidate.explanation_en = result
+    candidate.explanation_en = result.explanation
 
         
 def explain_batch(candidates: list[Candidate]) -> list[Candidate]: 

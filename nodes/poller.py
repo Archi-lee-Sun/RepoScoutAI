@@ -12,7 +12,6 @@ import sys
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
-from dataclasses import asdict
 from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from state import Candidate, PollerState
@@ -46,15 +45,19 @@ def build_github_query(keywords: list[str], last_checked: str | None) -> str:
     return f"({keywords_query}) stars:>{STARS_NUMBER} created:>{last_checked}"
 
 
-def _process_items(items: list, interest: str, unique_candidates: dict) -> None:
+def _process_items(items: list, interest: str, unique_candidates: dict, poller_state: PollerState) -> None:
     for item in items:
         url = item["html_url"]
+        full_name = item["full_name"]
+
+        if poller_state.is_seen(full_name):
+            continue
 
         if url in unique_candidates:
             unique_candidates[url].matched_clusters.append(interest)
         else:
             unique_candidates[url] = Candidate(
-                full_name=item["full_name"],
+                full_name=full_name,
                 url=url,
                 description=item.get("description") or "",
                 stars=item["stargazers_count"],
@@ -93,7 +96,7 @@ def _filter_candidates(candidates: list) -> list:
     return [c for c in candidates if c.description and c.stars > 2]
 
 
-def run_poller() -> list:
+def run_poller() -> list[Candidate]:
     poller_state = PollerState()
     headers = {
         "Accept": "application/vnd.github+json",
@@ -119,7 +122,7 @@ def run_poller() -> list:
                 )
                 interest_succeeded = False
                 continue
-            _process_items(items, interest, unique_candidates)
+            _process_items(items, interest, unique_candidates, poller_state)
 
         if interest_succeeded:
             poller_state.update_last_checked(interest, current_run_time)
@@ -127,10 +130,14 @@ def run_poller() -> list:
     candidates = list(unique_candidates.values())
     candidates = _filter_candidates(candidates)
 
+    if candidates:
+        poller_state.mark_seen_batch([c.full_name for c in candidates])
+
     logging.info(f"[poller] {len(candidates)} candidate repos after filtering")
-    return [asdict(c) for c in candidates]
+    return candidates
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    run_poller()
     run_poller()

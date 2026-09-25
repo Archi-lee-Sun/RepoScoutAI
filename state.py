@@ -139,4 +139,4 @@ class RepoStatus:
             self._save()
 
     def get_all(self) -> dict:
-        return self._data
+        return dict(self._data)

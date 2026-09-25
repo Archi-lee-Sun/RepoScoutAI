@@ -159,3 +159,25 @@ def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
             logger.exception(f"[fetcher] failed on {candidate.full_name}")
 
     return candidates
+
+
+def get_repo_info(full_name: str) -> dict:
+    url = f"https://api.github.com/repos/{full_name}"
+    try:
+        response = requests.get(url=url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        logger.exception(f"[cleanup] failed to get repo info for {full_name}")
+        return {}
+
+
+def unstar_repo(full_name: str) -> bool:
+    url = f"https://api.github.com/user/starred/{full_name}"
+    try:
+        response = requests.delete(url=url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception(f"[cleanup] failed to unstar {full_name}")
+        return False

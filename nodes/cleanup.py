@@ -18,7 +18,7 @@ from tenacity import (
 
 from state import RepoStatus
 from prompts import get_cleanup_prompt
-from nodes.github_client import (
+from github_client import (
     get_readme,
     get_tree,
     format_tree_text,
@@ -79,7 +79,7 @@ def _format_cleanup_input(
     )),
     reraise=True,
 )
-def check_repo(full_name: str, entry: dict, repo_status: RepoStatus | None = None) -> None:
+def check_repo(full_name: str, entry: dict, repo_status: RepoStatus) -> None:
     if entry.get("functional") is True or entry.get("functional") is False:
         return
 
@@ -126,12 +126,11 @@ def check_repo(full_name: str, entry: dict, repo_status: RepoStatus | None = Non
     result: CleanupDecision = structured_llm.invoke(messages)
     now_iso = now.isoformat()
 
-    if repo_status is not None:
-        if result.functional:
-            repo_status.update_entry(full_name, functional=True, last_checked=now_iso)
-        else:
-            unstar_repo(full_name)
-            repo_status.update_entry(full_name, functional=False, last_checked=now_iso)
+    if result.functional:
+        repo_status.update_entry(full_name, functional=True, last_checked=now_iso)
+    else:
+        unstar_repo(full_name)
+        repo_status.update_entry(full_name, functional=False, last_checked=now_iso)
 
 
 def run_cleanup(file_path: str = "repo_status.json") -> None:

@@ -3,3 +3,6 @@ __pycache__/
 .env
 state.json
 history.json
+repo_status.json
+pending.json
+pending.json.tmp

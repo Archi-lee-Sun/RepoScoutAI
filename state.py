@@ -1,7 +1,11 @@
 import json
 from dataclasses import dataclass , field
 from pathlib import Path
-
+from datetime import datetime, timezone, timedelta
+BASE_DIR = Path(__file__).resolve().parent
+PENDING_FILE = BASE_DIR / "pending.json"
+TMP_FILE = BASE_DIR / "pending.json.tmp"
+import os 
 
 @dataclass
 class Candidate:
@@ -140,3 +144,64 @@ class RepoStatus:
 
     def get_all(self) -> dict:
         return dict(self._data)
+
+
+
+class PendingRepos :
+    def _load(self) -> dict :
+        if not PENDING_FILE.exists() :
+            return {}
+
+        with open(PENDING_FILE , "r" , encoding="utf-8") as f :
+            return json.load(f)
+
+    def save_atomic(self , data : dict) -> None :
+        with open(TMP_FILE , "w" , encoding="utf-8") as f :
+            json.dump(data , f  , ensure_ascii=False , indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(TMP_FILE , PENDING_FILE)
+
+    def add(self , id : str , data : dict) -> None :
+        pending = self._load()
+
+        data["created_at"] = datetime.now(timezone.utc).isoformat()
+        pending[id] = data 
+
+        self.save_atomic(pending)
+
+
+    def get(self , id : str) -> dict | None :
+        pending = self._load()
+        return pending.get(id)
+
+    def remove(self ,  id: str) -> bool :
+        pending = self._load()
+        if id in pending:
+            del pending[id]
+            self.save_atomic(pending)
+            return True
+        return False
+
+    def prune_old_entries(self, max_days: int = 30) -> int :
+        pending = self._load()
+        now = datetime.now(timezone.utc)
+        to_delete = []
+
+        for id, item in pending.items():
+            created_at_str = item.get("created_at")
+            if created_at_str:
+                try:
+                    created_at = datetime.fromisoformat(created_at_str)
+                    if now - created_at > timedelta(days=max_days):
+                        to_delete.append(id)
+                except ValueError:
+                    continue
+
+        if to_delete:
+            for id in to_delete:
+                del pending[id]
+            self.save_atomic(pending)
+
+        return len(to_delete)

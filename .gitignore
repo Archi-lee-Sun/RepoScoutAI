@@ -6,3 +6,8 @@ history.json
 repo_status.json
 pending.json
 pending.json.tmp
+state.json.tmp
+history.json.tmp
+repo_status.json.tmp
+*.json.lock
+scheduled_job.lock

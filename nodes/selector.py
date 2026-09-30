@@ -92,4 +92,5 @@ def select_batch(candidates: list[Candidate], meta_prompt: str) -> list[Candidat
             select_candidate(candidate, meta_prompt)
         except Exception:
             logger.exception(f"[selector] failed on {candidate.full_name}")
+            raise
     return candidates

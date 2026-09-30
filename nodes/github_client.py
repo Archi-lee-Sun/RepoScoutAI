@@ -3,7 +3,11 @@ from urllib.parse import quote
 import base64
 import logging
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+NODES_DIR = os.path.dirname(__file__)
+for path in (ROOT_DIR, NODES_DIR):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 from state import Candidate
 import requests
 from dotenv import load_dotenv
@@ -54,12 +58,17 @@ def get_readme(full_name : str) -> dict :
                 "is_success" : True ,
                 "readme" : content[:MAX_README_CHARS] ,
             }
-    except Exception :
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return {"is_success": False, "readme": ""}
         logger.exception(f"[fetcher] failed to get readme for {full_name}")
-        return {
-            "is_success": False,
-            "readme": "",
-        }
+        raise
+    except requests.exceptions.RequestException:
+        logger.exception(f"[fetcher] failed to get readme for {full_name}")
+        raise
+    except (KeyError, ValueError, UnicodeDecodeError):
+        logger.exception(f"[fetcher] invalid README response for {full_name}")
+        raise
 
 
 
@@ -75,9 +84,9 @@ def get_tree(full_name: str) -> list[dict]:
             logger.warning(f"[fetcher] tree truncated for {full_name}")
 
         return data["tree"]
-    except Exception:
+    except requests.exceptions.RequestException:
         logger.exception(f"[fetcher] failed to get tree for {full_name}")
-        return []
+        raise
 
 
 def format_tree_text(entries: list[dict]) -> str:
@@ -129,9 +138,14 @@ def get_file(full_name: str, path: str) -> str:
         response.raise_for_status()
         response.encoding = "utf-8"
         return response.text[:MAX_FILE_CHARS]
-    except Exception:
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return ""
         logger.exception(f"[fetcher] failed to get file {path} in {full_name}")
-        return ""
+        raise
+    except requests.exceptions.RequestException:
+        logger.exception(f"[fetcher] failed to get file {path} in {full_name}")
+        raise
 
 
 def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
@@ -157,6 +171,7 @@ def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
                     candidate.code_files[path] = content
         except Exception:
             logger.exception(f"[fetcher] failed on {candidate.full_name}")
+            raise
 
     return candidates
 

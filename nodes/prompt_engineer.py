@@ -3,13 +3,23 @@ import os
 import sys
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+NODES_DIR = os.path.dirname(__file__)
+for path in (ROOT_DIR, NODES_DIR):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 from google import genai
 from google.genai import errors
-from poller import INTERESTS
-from prompts import get_validator_briefing_prompt
-from state import PreferenceMemory
+
+try:
+  from nodes.poller import INTERESTS
+  from nodes.prompts import get_validator_briefing_prompt
+  from nodes.state import PreferenceMemory
+except ModuleNotFoundError:
+  from poller import INTERESTS
+  from prompts import get_validator_briefing_prompt
+  from state import PreferenceMemory
 from tenacity import (
     retry,
     retry_if_exception_type,

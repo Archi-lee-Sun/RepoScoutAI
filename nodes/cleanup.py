@@ -1,6 +1,10 @@
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+NODES_DIR = os.path.dirname(__file__)
+for path in (ROOT_DIR, NODES_DIR):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 import logging
 from datetime import datetime, timezone, timedelta
@@ -16,17 +20,30 @@ from tenacity import (
     wait_exponential,
 )
 
-from state import RepoStatus
-from prompts import get_cleanup_prompt
-from github_client import (
-    get_readme,
-    get_tree,
-    format_tree_text,
-    pick_files,
-    get_file,
-    get_repo_info,
-    unstar_repo,
-)
+try:
+    from nodes.state import RepoStatus
+    from nodes.prompts import get_cleanup_prompt
+    from nodes.github_client import (
+        get_readme,
+        get_tree,
+        format_tree_text,
+        pick_files,
+        get_file,
+        get_repo_info,
+        unstar_repo,
+    )
+except ModuleNotFoundError:
+    from state import RepoStatus
+    from prompts import get_cleanup_prompt
+    from github_client import (
+        get_readme,
+        get_tree,
+        format_tree_text,
+        pick_files,
+        get_file,
+        get_repo_info,
+        unstar_repo,
+    )
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -129,8 +146,10 @@ def check_repo(full_name: str, entry: dict, repo_status: RepoStatus) -> None:
     if result.functional:
         repo_status.update_entry(full_name, functional=True, last_checked=now_iso)
     else:
-        unstar_repo(full_name)
-        repo_status.update_entry(full_name, functional=False, last_checked=now_iso)
+        if unstar_repo(full_name):
+            repo_status.update_entry(full_name, functional=False, last_checked=now_iso)
+        else:
+            logger.warning(f"[cleanup] left {full_name} retryable after unsuccessful unstar")
 
 
 def run_cleanup(file_path: str = "repo_status.json") -> None:

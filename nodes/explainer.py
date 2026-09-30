@@ -82,6 +82,7 @@ def explain_batch(candidates: list[Candidate]) -> list[Candidate]:
         try :
             explain_repository(candidate)
         except Exception :
+            candidate.processing_error = "explanation failed"
             logger.exception(
                 "Failed to explain repository: %s",
                 candidate.full_name,

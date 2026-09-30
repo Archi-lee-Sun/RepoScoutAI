@@ -21,24 +21,36 @@ def poll_trending(window: str = "week") -> list[Candidate]:
     (7 days back for 'week', 30 days back for 'month'), sorted by stars.
     Deduplicates against previously seen repos using PollerState.
     """
+    if window not in {"week", "month"}:
+        raise ValueError("window must be 'week' or 'month'")
     days = 7 if window == "week" else 30
     cluster_name = f"trending_{window}"
 
-    cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
-    cutoff_iso = cutoff_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    poller_state = PollerState()
+    current_run_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    last_checked = poller_state.get_last_checked(cluster_name)
+    if last_checked:
+        cutoff_iso = last_checked
+    else:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff_iso = cutoff_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    query = f"created:>={cutoff_iso} stars:>2"
+    query = f"created:>{cutoff_iso} stars:>2"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "RepoScoutAI-App",
         "Authorization": f"Bearer {GITHUB_TOKEN}",
     }
 
-    poller_state = PollerState()
     candidates: list[Candidate] = []
     seen_in_run: set[str] = set()
 
-    for page, per_page in [(1, 100), (2, 50)]:
+    page = 1
+    query_succeeded = True
+    continuation_checkpoint = None
+    reached_page_limit = False
+    while True:
+        per_page = 100
         params = {
             "q": query,
             "sort": "stars",
@@ -58,7 +70,11 @@ def poll_trending(window: str = "week") -> list[Candidate]:
             items = response.json().get("items", [])
         except requests.exceptions.RequestException as e:
             logger.warning(f"[trending_poller] request failed (page {page}): {e}")
-            continue
+            query_succeeded = False
+            break
+
+        if not items:
+            break
 
         for item in items:
             full_name = item.get("full_name")
@@ -88,8 +104,34 @@ def poll_trending(window: str = "week") -> list[Candidate]:
                 )
             )
 
-    if candidates:
-        poller_state.mark_seen_batch([c.full_name for c in candidates])
+        if len(items) < per_page:
+            break
+        if page >= 10:
+            reached_page_limit = True
+            oldest_created = items[-1].get("created_at")
+            if oldest_created:
+                oldest_time = datetime.fromisoformat(oldest_created.replace("Z", "+00:00"))
+                continuation_checkpoint = (
+                    oldest_time - timedelta(seconds=1)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            break
+        page += 1
+
+    if reached_page_limit and not continuation_checkpoint:
+        query_succeeded = False
+        logger.warning(
+            "[trending_poller] reached the result limit without a continuation timestamp; "
+            "leaving %s checkpoint unchanged",
+            cluster_name,
+        )
+
+    if query_succeeded:
+        checkpoint = continuation_checkpoint or current_run_time
+        if candidates:
+            for candidate in candidates:
+                candidate.source_checkpoints[cluster_name] = checkpoint
+        else:
+            poller_state.commit_checkpoints({cluster_name: checkpoint})
 
     logger.info(f"[trending_poller] {len(candidates)} new trending candidate repos found for window '{window}'")
     return candidates

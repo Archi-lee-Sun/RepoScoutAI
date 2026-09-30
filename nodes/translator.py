@@ -55,11 +55,14 @@ def translate_repository(candidate: Candidate) -> None:
 
 def translate_batch(candidates: list[Candidate]) -> list[Candidate]:
     for candidate in candidates:
+        if candidate.processing_error:
+            continue
         if not candidate.explanation_en:
             continue
         try:
             translate_repository(candidate)
         except Exception:
+            candidate.processing_error = "translation failed"
             logger.exception(f"[translator] failed on {candidate.full_name}")
 
     return candidates

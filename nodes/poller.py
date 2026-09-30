@@ -54,7 +54,8 @@ def _process_items(items: list, interest: str, unique_candidates: dict, poller_s
             continue
 
         if url in unique_candidates:
-            unique_candidates[url].matched_clusters.append(interest)
+            if interest not in unique_candidates[url].matched_clusters:
+                unique_candidates[url].matched_clusters.append(interest)
         else:
             unique_candidates[url] = Candidate(
                 full_name=full_name,
@@ -106,14 +107,19 @@ def run_poller() -> list[Candidate]:
 
     unique_candidates: dict[str, Candidate] = {}
     current_run_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    successful_checkpoints: dict[str, str] = {}
 
     for interest, keywords in INTERESTS.items():
         last_checked = poller_state.get_last_checked(interest)
         github_query = build_github_query(keywords, last_checked)
 
         interest_succeeded = True
+        page = 1
+        reached_page_limit = False
+        continuation_checkpoint = None
 
-        for page, per_page in [(1, 100), (2, 50)]:
+        while True:
+            per_page = 100
             items = _fetch_page(github_query, page, per_page, headers)
             if items is None:
                 logging.warning(
@@ -121,17 +127,66 @@ def run_poller() -> list[Candidate]:
                     f"skipping checkpoint update for this interest"
                 )
                 interest_succeeded = False
-                continue
+                break
+            if not items:
+                break
             _process_items(items, interest, unique_candidates, poller_state)
+            if len(items) < per_page:
+                break
+            if page >= 10:
+                reached_page_limit = True
+                oldest_created = items[-1].get("created_at")
+                if oldest_created:
+                    oldest_time = datetime.fromisoformat(oldest_created.replace("Z", "+00:00"))
+                    continuation_checkpoint = (
+                        oldest_time - timedelta(seconds=1)
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                break
+            page += 1
 
-        if interest_succeeded:
-            poller_state.update_last_checked(interest, current_run_time)
+        if interest_succeeded and reached_page_limit and continuation_checkpoint:
+            successful_checkpoints[interest] = continuation_checkpoint
+            logging.warning(
+                "[poller] reached GitHub's 1,000-result search limit for %s; "
+                "will continue from %s after this batch completes",
+                interest,
+                continuation_checkpoint,
+            )
+        elif interest_succeeded and not reached_page_limit:
+            successful_checkpoints[interest] = current_run_time
+        elif reached_page_limit:
+            logging.warning(
+                "[poller] reached the search limit for %s without a usable continuation "
+                "timestamp; leaving its checkpoint unchanged",
+                interest,
+            )
 
     candidates = list(unique_candidates.values())
     candidates = _filter_candidates(candidates)
 
-    if candidates:
-        poller_state.mark_seen_batch([c.full_name for c in candidates])
+    # A checkpoint with candidates is committed only after pipeline completion.
+    # Empty clusters (or results removed by intentional local filters) are safe
+    # to advance immediately because they have no downstream work to lose.
+    cluster_candidates: dict[str, list[Candidate]] = {name: [] for name in successful_checkpoints}
+    for candidate in candidates:
+        for cluster in candidate.matched_clusters:
+            if cluster in cluster_candidates:
+                cluster_candidates[cluster].append(candidate)
+
+    empty_clusters = {
+        cluster: timestamp
+        for cluster, timestamp in successful_checkpoints.items()
+        if not cluster_candidates[cluster]
+    }
+    if empty_clusters:
+        poller_state.commit_checkpoints(empty_clusters)
+
+    for candidate in candidates:
+        candidate.source_checkpoints = {
+            cluster: successful_checkpoints[cluster]
+            for cluster in candidate.matched_clusters
+            if cluster in successful_checkpoints
+        }
 
     logging.info(f"[poller] {len(candidates)} candidate repos after filtering")
     return candidates
@@ -139,5 +194,4 @@ def run_poller() -> list[Candidate]:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    run_poller()
     run_poller()

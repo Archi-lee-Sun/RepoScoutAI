@@ -70,4 +70,5 @@ def validate_batch(candidates: list[Candidate], meta_prompt: str) -> list[Candid
             validate_candidate(candidate, meta_prompt)
         except Exception:
             logger.exception(f"[validator] failed on {candidate.full_name}")
+            raise
     return candidates

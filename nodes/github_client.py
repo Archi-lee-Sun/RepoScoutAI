@@ -181,3 +181,15 @@ def unstar_repo(full_name: str) -> bool:
     except Exception:
         logger.exception(f"[cleanup] failed to unstar {full_name}")
         return False
+
+
+def star_repo(full_name: str) -> bool:
+    url = f"https://api.github.com/user/starred/{full_name}"
+    try:
+        response = requests.put(url=url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception(f"[github] failed to star {full_name}")
+        return False
+

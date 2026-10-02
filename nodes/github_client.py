@@ -9,6 +9,11 @@ for path in (ROOT_DIR, NODES_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 from state import Candidate
+from candidate_failures import (
+    CandidateResponseError,
+    is_temporary_candidate_failure,
+    record_candidate_failure,
+)
 import requests
 from dotenv import load_dotenv
 
@@ -42,6 +47,8 @@ def get_readme(full_name : str) -> dict :
         response  = requests.get(url , headers=HEADERS , timeout=15)
         response.raise_for_status()
         data = response.json()
+        if not isinstance(data, dict):
+            raise CandidateResponseError(f"invalid README response for {full_name}")
 
         content = base64.b64decode(data["content"]).decode("utf-8")
         size = data["size"]
@@ -61,14 +68,11 @@ def get_readme(full_name : str) -> dict :
     except requests.exceptions.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 404:
             return {"is_success": False, "readme": ""}
-        logger.exception(f"[fetcher] failed to get readme for {full_name}")
         raise
     except requests.exceptions.RequestException:
-        logger.exception(f"[fetcher] failed to get readme for {full_name}")
         raise
-    except (KeyError, ValueError, UnicodeDecodeError):
-        logger.exception(f"[fetcher] invalid README response for {full_name}")
-        raise
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise CandidateResponseError(f"invalid README response for {full_name}") from exc
 
 
 
@@ -79,13 +83,19 @@ def get_tree(full_name: str) -> list[dict]:
         response = requests.get(url=url, headers=HEADERS, timeout=15)
         response.raise_for_status()
         data = response.json()
+        if not isinstance(data, dict):
+            raise CandidateResponseError(f"invalid file tree response for {full_name}")
 
         if data.get("truncated"):
             logger.warning(f"[fetcher] tree truncated for {full_name}")
 
-        return data["tree"]
+        tree = data["tree"]
+        if not isinstance(tree, list):
+            raise CandidateResponseError(f"invalid file tree response for {full_name}")
+        return tree
+    except (KeyError, TypeError) as exc:
+        raise CandidateResponseError(f"invalid file tree response for {full_name}") from exc
     except requests.exceptions.RequestException:
-        logger.exception(f"[fetcher] failed to get tree for {full_name}")
         raise
 
 
@@ -144,13 +154,12 @@ def get_file(full_name: str, path: str) -> str:
         logger.exception(f"[fetcher] failed to get file {path} in {full_name}")
         raise
     except requests.exceptions.RequestException:
-        logger.exception(f"[fetcher] failed to get file {path} in {full_name}")
         raise
 
 
 def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
     for candidate in candidates:
-        if not candidate.is_accepted:
+        if candidate.processing_error or not candidate.is_accepted:
             continue
 
         try:
@@ -163,15 +172,30 @@ def fetch_batch(candidates: list[Candidate]) -> list[Candidate]:
             candidate.readme = readme["readme"]
 
             entries = get_tree(candidate.full_name)
-            candidate.tree_text = format_tree_text(entries)
+            try:
+                candidate.tree_text = format_tree_text(entries)
+                file_paths = pick_files(entries)
+            except (KeyError, TypeError) as exc:
+                raise CandidateResponseError(
+                    f"invalid file tree entries for {candidate.full_name}"
+                ) from exc
 
-            for path in pick_files(entries):
+            for path in file_paths:
                 content = get_file(candidate.full_name, path)
                 if content:
                     candidate.code_files[path] = content
-        except Exception:
-            logger.exception(f"[fetcher] failed on {candidate.full_name}")
-            raise
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                candidate.selector_accepted = False
+                candidate.selector_reason = "repository disappeared before evidence fetch"
+                continue
+            if not is_temporary_candidate_failure(exc):
+                raise
+            record_candidate_failure(candidate, "fetcher", exc)
+        except Exception as exc:
+            if not is_temporary_candidate_failure(exc):
+                raise
+            record_candidate_failure(candidate, "fetcher", exc)
 
     return candidates
 

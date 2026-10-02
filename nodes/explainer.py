@@ -17,6 +17,7 @@ from tenacity import (
 )
 
 from state import Candidate
+from candidate_failures import is_temporary_candidate_failure, record_candidate_failure
 from prompts import get_explainer_prompt
 
 load_dotenv()
@@ -27,7 +28,8 @@ class Explainer(BaseModel) :
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite",
-    temperature=0.1
+    temperature=0.1,
+    max_retries=1,
 )
 structured_llm = llm.with_structured_output(Explainer)
 
@@ -77,16 +79,14 @@ def explain_repository(candidate : Candidate) :
         
 def explain_batch(candidates: list[Candidate]) -> list[Candidate]: 
     for candidate in candidates :
-        if not candidate.selector_accepted:
+        if candidate.processing_error or not candidate.selector_accepted or not candidate.is_finalist:
             continue
         try :
             explain_repository(candidate)
-        except Exception :
-            candidate.processing_error = "explanation failed"
-            logger.exception(
-                "Failed to explain repository: %s",
-                candidate.full_name,
-            )
+        except Exception as exc:
+            if not is_temporary_candidate_failure(exc):
+                raise
+            record_candidate_failure(candidate, "explainer", exc)
 
 
     return candidates

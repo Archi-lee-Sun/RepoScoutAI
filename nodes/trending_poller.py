@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
+MIN_STARS = 5
 
 
 def poll_trending(window: str = "week") -> list[Candidate]:
@@ -23,6 +24,8 @@ def poll_trending(window: str = "week") -> list[Candidate]:
     """
     if window not in {"week", "month"}:
         raise ValueError("window must be 'week' or 'month'")
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN is required for trending discovery")
     days = 7 if window == "week" else 30
     cluster_name = f"trending_{window}"
 
@@ -35,7 +38,7 @@ def poll_trending(window: str = "week") -> list[Candidate]:
         cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
         cutoff_iso = cutoff_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    query = f"created:>{cutoff_iso} stars:>2"
+    query = f"created:>{cutoff_iso} stars:>={MIN_STARS}"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "RepoScoutAI-App",
@@ -69,6 +72,8 @@ def poll_trending(window: str = "week") -> list[Candidate]:
             response.raise_for_status()
             items = response.json().get("items", [])
         except requests.exceptions.RequestException as e:
+            if getattr(getattr(e, "response", None), "status_code", None) == 401:
+                raise RuntimeError("GITHUB_TOKEN was rejected by GitHub") from e
             logger.warning(f"[trending_poller] request failed (page {page}): {e}")
             query_succeeded = False
             break
@@ -88,8 +93,8 @@ def poll_trending(window: str = "week") -> list[Candidate]:
             description = item.get("description") or ""
             stars = item.get("stargazers_count", 0)
 
-            # Filter out candidates with empty descriptions or <= 2 stars (consistent with poller.py)
-            if not description or stars <= 2:
+            # Enforce the same minimum locally even though the query filters too.
+            if not description or stars < MIN_STARS:
                 continue
 
             seen_in_run.add(full_name)

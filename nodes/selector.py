@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import logging
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from google.api_core.exceptions import ResourceExhausted, GoogleAPICallError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -17,6 +17,7 @@ from tenacity import (
 )
 
 from state import Candidate
+from candidate_failures import is_temporary_candidate_failure, record_candidate_failure
 from prompts import get_selector_prompt
 
 load_dotenv()
@@ -25,12 +26,14 @@ logger = logging.getLogger(__name__)
 
 class SelectorDecision(BaseModel):
     accept: bool
+    score: int = Field(ge=0, le=100, description="Calibrated relevance and practical-value score")
     reason: str
 
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite",
-    temperature=0.1
+    temperature=0.1,
+    max_retries=1,
 )
 structured_llm = llm.with_structured_output(SelectorDecision)
 
@@ -76,12 +79,13 @@ def select_candidate(candidate: Candidate, meta_prompt: str) -> None:
 
     result: SelectorDecision = structured_llm.invoke(messages)
     candidate.selector_accepted = result.accept
+    candidate.selector_score = result.score
     candidate.selector_reason = result.reason
 
 
 def select_batch(candidates: list[Candidate], meta_prompt: str) -> list[Candidate]:
     for candidate in candidates:
-        if not candidate.is_accepted:
+        if candidate.processing_error or not candidate.is_accepted:
             continue
         if not candidate.readme:
             continue
@@ -90,7 +94,8 @@ def select_batch(candidates: list[Candidate], meta_prompt: str) -> list[Candidat
 
         try:
             select_candidate(candidate, meta_prompt)
-        except Exception:
-            logger.exception(f"[selector] failed on {candidate.full_name}")
-            raise
+        except Exception as exc:
+            if not is_temporary_candidate_failure(exc):
+                raise
+            record_candidate_failure(candidate, "selector", exc)
     return candidates

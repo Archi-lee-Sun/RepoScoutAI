@@ -30,7 +30,12 @@ from tenacity import (
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=GOOGLE_API_KEY)
+client = genai.Client(
+    api_key=GOOGLE_API_KEY,
+    http_options=genai.types.HttpOptions(
+        retry_options=genai.types.HttpRetryOptions(attempts=1),
+    ),
+)
 
 MODEL_NAME = "gemini-3.1-flash-lite"
 
@@ -78,4 +83,4 @@ def generate_meta_prompt(preference_memory: PreferenceMemory) -> str:
   if not meta_prompt:
     raise EmptyLLMResponseError("The LLM returned empty text")
 
-  return meta_prompt 
+  return meta_prompt

@@ -58,8 +58,7 @@ def test_telegram_failure_is_visible_and_remains_retryable(fake_pipeline, monkey
     result = DispatchResult(failed={candidate.full_name: OSError("Telegram unavailable")})
     monkeypatch.setattr(pipeline, "dispatch_batch", _async_value(result))
 
-    with pytest.raises(pipeline.DispatchBatchError, match="Telegram delivery failed"):
-        asyncio.run(pipeline.run_pipeline([candidate]))
+    asyncio.run(pipeline.run_pipeline([candidate]))
 
     assert state.seen == []
     assert state.checkpoints == [{}]
@@ -95,8 +94,7 @@ def test_partial_telegram_failure_completes_only_successful_candidates(fake_pipe
     )
     monkeypatch.setattr(pipeline, "dispatch_batch", _async_value(result))
 
-    with pytest.raises(pipeline.DispatchBatchError):
-        asyncio.run(pipeline.run_pipeline([first, second]))
+    asyncio.run(pipeline.run_pipeline([first, second]))
 
     assert state.seen == [first.full_name]
     assert state.checkpoints == [{}]
@@ -122,7 +120,7 @@ def test_dispatch_saves_pending_before_send_and_removes_it_after_send_failure(mo
             return None
         async def send_message(self, **kwargs):
             assert len(store) == 1
-            raise OSError("send failed")
+            raise ConnectionError("send failed")
 
     monkeypatch.setattr(dispatch, "PendingRepos", FakePending)
     monkeypatch.setattr(dispatch, "Bot", FakeBot)
@@ -408,26 +406,28 @@ def test_cli_routes_all_supported_jobs(monkeypatch):
 def test_explanation_and_translation_errors_leave_candidates_retryable(monkeypatch):
     import nodes.explainer as explainer
     import nodes.translator as translator
+    from google.api_core.exceptions import ServiceUnavailable
 
     candidate = make_candidate()
+    candidate.is_finalist = True
     candidate.explanation_ka = None
     monkeypatch.setattr(
         explainer,
         "explain_repository",
-        lambda _: (_ for _ in ()).throw(RuntimeError("LLM unavailable")),
+        lambda _: (_ for _ in ()).throw(ServiceUnavailable("LLM unavailable")),
     )
     explainer.explain_batch([candidate])
-    assert candidate.processing_error == "explanation failed"
+    assert candidate.processing_error.startswith("explainer temporarily failed")
 
     candidate.processing_error = None
     candidate.explanation_en = "English"
     monkeypatch.setattr(
         translator,
         "translate_repository",
-        lambda _: (_ for _ in ()).throw(RuntimeError("LLM unavailable")),
+        lambda _: (_ for _ in ()).throw(ServiceUnavailable("LLM unavailable")),
     )
     translator.translate_batch([candidate])
-    assert candidate.processing_error == "translation failed"
+    assert candidate.processing_error.startswith("translator temporarily failed")
 
 
 def test_pending_expiry_prunes_stale_callback(tmp_path, monkeypatch):
@@ -501,6 +501,7 @@ def test_poller_defers_candidate_cluster_checkpoint_until_pipeline(monkeypatch):
             self.committed.append(dict(checkpoints))
 
     MemoryState.committed = []
+    monkeypatch.setattr(poller, "GITHUB_TOKEN", "configured")
     monkeypatch.setattr(poller, "PollerState", MemoryState)
     monkeypatch.setattr(poller, "INTERESTS", {"llm": ["llm"], "agents": ["agent"]})
     def fetch(query, page, per_page, headers):
@@ -539,6 +540,7 @@ def test_poller_partial_page_failure_does_not_advance_cluster(monkeypatch):
             self.committed.append(dict(checkpoints))
 
     MemoryState.committed = []
+    monkeypatch.setattr(poller, "GITHUB_TOKEN", "configured")
     monkeypatch.setattr(poller, "PollerState", MemoryState)
     monkeypatch.setattr(poller, "INTERESTS", {"llm": ["llm"]})
     items = [
@@ -592,6 +594,7 @@ def test_trending_uses_checkpoint_to_keep_older_failures_retryable(monkeypatch):
             }]}
 
     MemoryState.committed = []
+    monkeypatch.setattr(trending, "GITHUB_TOKEN", "configured")
     requested = []
     monkeypatch.setattr(trending, "PollerState", MemoryState)
     monkeypatch.setattr(
@@ -605,6 +608,7 @@ def test_trending_uses_checkpoint_to_keep_older_failures_retryable(monkeypatch):
     assert len(candidates) == 1
     assert candidates[0].source_checkpoints["trending_week"].startswith("20")
     assert "created:>2020-01-01T00:00:00Z" in requested[0]
+    assert "stars:>=5" in requested[0]
     assert MemoryState.committed == []
 
 

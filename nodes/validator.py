@@ -17,6 +17,7 @@ from tenacity import (
 )
 
 from state import Candidate
+from candidate_failures import is_temporary_candidate_failure, record_candidate_failure
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -28,7 +29,8 @@ class ValidatorDecision(BaseModel):
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite",
-    temperature=0.1
+    temperature=0.1,
+    max_retries=1,
 )
 
 def _format_candidate(candidate: Candidate) -> str:
@@ -66,9 +68,12 @@ def validate_candidate(candidate: Candidate, meta_prompt: str) :
 
 def validate_batch(candidates: list[Candidate], meta_prompt: str) -> list[Candidate]:
     for candidate in candidates:
+        if candidate.processing_error:
+            continue
         try:
             validate_candidate(candidate, meta_prompt)
-        except Exception:
-            logger.exception(f"[validator] failed on {candidate.full_name}")
-            raise
+        except Exception as exc:
+            if not is_temporary_candidate_failure(exc):
+                raise
+            record_candidate_failure(candidate, "validator", exc)
     return candidates

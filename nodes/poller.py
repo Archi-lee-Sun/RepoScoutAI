@@ -20,7 +20,7 @@ load_dotenv()
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
-STARS_NUMBER = 3
+MIN_STARS = 5
 
 INTERESTS = {
     "llm": ["llm", "language model", "gpt", "gemini"],
@@ -42,7 +42,7 @@ def build_github_query(keywords: list[str], last_checked: str | None) -> str:
         default_time = datetime.now(timezone.utc) - timedelta(days=1)
         last_checked = default_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    return f"({keywords_query}) stars:>{STARS_NUMBER} created:>{last_checked}"
+    return f"({keywords_query}) stars:>={MIN_STARS} created:>{last_checked}"
 
 
 def _process_items(items: list, interest: str, unique_candidates: dict, poller_state: PollerState) -> None:
@@ -80,24 +80,23 @@ def _fetch_page(query: str, page: int, per_page: int, headers: dict) -> list | N
         response.raise_for_status()
         return response.json().get("items", [])
     except requests.exceptions.RequestException as e:
+        if getattr(getattr(e, "response", None), "status_code", None) == 401:
+            raise RuntimeError("GITHUB_TOKEN was rejected by GitHub") from e
         logging.warning(f"[ERROR] request failed (page {page}): {e}")
         return None
 
 
 def _filter_candidates(candidates: list) -> list:
     """
-    Drops candidates missing a description, and repos at or below a
-    2-star floor. Note: the star check is currently redundant with the
-    stars:>{STARS_NUMBER} qualifier already in the GitHub query itself —
-    kept here as a separate safety net in case that query-level
-    threshold changes later. The description check is the one doing
-    real work: GitHub's search API has no "has description" qualifier,
-    so this can only be filtered post-fetch, in Python.
+    Drops candidates missing a description or below the five-star minimum.
     """
-    return [c for c in candidates if c.description and c.stars > 2]
+    return [c for c in candidates if c.description and c.stars >= MIN_STARS]
 
 
 def run_poller() -> list[Candidate]:
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN is required for GitHub discovery")
+
     poller_state = PollerState()
     headers = {
         "Accept": "application/vnd.github+json",

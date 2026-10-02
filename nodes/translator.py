@@ -17,6 +17,7 @@ from tenacity import (
 )
 
 from state import Candidate
+from candidate_failures import is_temporary_candidate_failure, record_candidate_failure
 from prompts import get_translator_prompt
 
 load_dotenv()
@@ -30,6 +31,7 @@ class Translation(BaseModel):
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite",
     temperature=0.1,
+    max_retries=1,
 )
 structured_llm = llm.with_structured_output(Translation)
 
@@ -55,14 +57,15 @@ def translate_repository(candidate: Candidate) -> None:
 
 def translate_batch(candidates: list[Candidate]) -> list[Candidate]:
     for candidate in candidates:
-        if candidate.processing_error:
+        if candidate.processing_error or not candidate.is_finalist:
             continue
         if not candidate.explanation_en:
             continue
         try:
             translate_repository(candidate)
-        except Exception:
-            candidate.processing_error = "translation failed"
-            logger.exception(f"[translator] failed on {candidate.full_name}")
+        except Exception as exc:
+            if not is_temporary_candidate_failure(exc):
+                raise
+            record_candidate_failure(candidate, "translator", exc)
 
     return candidates

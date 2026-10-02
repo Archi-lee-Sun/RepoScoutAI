@@ -20,11 +20,35 @@ from state import Candidate, PreferenceMemory, PollerState
 logger = logging.getLogger(__name__)
 
 
-class DispatchBatchError(RuntimeError):
-    def __init__(self, failed: dict[str, Exception]):
-        self.failed = failed
-        details = "; ".join(f"{repo}: {error}" for repo, error in failed.items())
-        super().__init__(f"Telegram delivery failed for {len(failed)} candidate(s): {details}")
+def _recommendation_limit() -> int:
+    try:
+        return max(1, int(os.getenv("MAX_TELEGRAM_RECOMMENDATIONS", "8")))
+    except ValueError:
+        logger.warning("Invalid MAX_TELEGRAM_RECOMMENDATIONS; using 8")
+        return 8
+
+
+def rank_finalists(candidates: list[Candidate]) -> list[Candidate]:
+    """Mark the highest-value selector accepts for the costly writing stages."""
+    limit = _recommendation_limit()
+    strong_clusters = {"coding_agents", "agents", "python_packages", "prompt_engineering", "llm"}
+    accepted = [c for c in candidates if c.selector_accepted is True]
+
+    def rank_key(candidate: Candidate):
+        # Selector score carries the evidence and practical-value assessment.
+        # Cluster coverage is a small relevance tie-breaker; stars contribute
+        # at most one point and never exclude a candidate.
+        score = candidate.selector_score if candidate.selector_score is not None else 0
+        cluster_bonus = min(3, len(strong_clusters.intersection(candidate.matched_clusters)))
+        star_tiebreak = 1 if candidate.stars >= 100 else 0
+        return (score + cluster_bonus + star_tiebreak, score, candidate.full_name.casefold())
+
+    accepted.sort(key=rank_key, reverse=True)
+    finalists = accepted[:limit]
+    finalist_names = {c.full_name for c in finalists}
+    for candidate in candidates:
+        candidate.is_finalist = candidate.full_name in finalist_names
+    return finalists
 
 
 async def run_pipeline(candidates: list[Candidate]) -> None:
@@ -32,12 +56,18 @@ async def run_pipeline(candidates: list[Candidate]) -> None:
         logger.info("[pipeline] no new candidates, stopping")
         return
 
-    meta_prompt = generate_meta_prompt(PreferenceMemory())
-
     try:
+        meta_prompt = generate_meta_prompt(PreferenceMemory())
         candidates = validate_batch(candidates, meta_prompt)
         candidates = fetch_batch(candidates)
         candidates = select_batch(candidates, meta_prompt)
+        selector_accepts = sum(c.selector_accepted is True for c in candidates)
+        finalists = rank_finalists(candidates)
+        estimated_calls_saved = 2 * max(0, selector_accepts - len(finalists))
+        logger.info(
+            "[pipeline] selector accepts=%d finalists=%d cap=%d; avoiding up to %d explainer/translator LLM calls",
+            selector_accepts, len(finalists), _recommendation_limit(), estimated_calls_saved,
+        )
         candidates = explain_batch(candidates)
         candidates = translate_batch(candidates)
     except Exception:
@@ -48,10 +78,16 @@ async def run_pipeline(candidates: list[Candidate]) -> None:
         candidate for candidate in candidates
         if candidate.processing_error is None
         and candidate.selector_accepted is True
+        and candidate.is_finalist
         and candidate.explanation_en
         and candidate.explanation_ka
     ]
     dispatch_result = await dispatch_batch(sendable)
+
+    for candidate in candidates:
+        if candidate.full_name in dispatch_result.failed:
+            exc = dispatch_result.failed[candidate.full_name]
+            candidate.processing_error = f"telegram dispatch temporarily failed ({type(exc).__name__})"
 
     completed = set()
     for candidate in candidates:
@@ -61,6 +97,8 @@ async def run_pipeline(candidates: list[Candidate]) -> None:
             completed.add(candidate.full_name)
         elif candidate.is_accepted is True and candidate.selector_accepted is False:
             # A missing/short README is an intentional fetch-stage rejection.
+            completed.add(candidate.full_name)
+        elif candidate.is_accepted is True and candidate.selector_accepted is True and not candidate.is_finalist:
             completed.add(candidate.full_name)
         elif candidate.is_accepted is True and candidate.selector_accepted is True:
             if candidate.full_name in dispatch_result.sent:
@@ -85,13 +123,17 @@ async def run_pipeline(candidates: list[Candidate]) -> None:
     }
     poller_state.commit_checkpoints(committable)
 
-    if dispatch_result.failed:
-        raise DispatchBatchError(dispatch_result.failed)
-
-    incomplete = {
-        candidate.full_name: candidate.processing_error
+    normal_rejections = sum(
+        candidate.processing_error is None and (
+            candidate.is_accepted is False or candidate.selector_accepted is False
+        )
         for candidate in candidates
-        if candidate.processing_error
-    }
-    if incomplete:
-        logger.error("[pipeline] candidates left retryable after stage failures: %s", incomplete)
+    )
+    temporary_failures = sum(candidate.processing_error is not None for candidate in candidates)
+    logger.info(
+        "[pipeline] run summary: processed=%d rejected=%d temporarily_failed=%d sent=%d",
+        len(completed) - normal_rejections,
+        normal_rejections,
+        temporary_failures,
+        len(dispatch_result.sent),
+    )

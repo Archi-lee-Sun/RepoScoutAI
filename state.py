@@ -28,6 +28,8 @@ class Candidate:
     code_files: dict[str, str] = field(default_factory=dict)
     selector_accepted: bool | None = None
     selector_reason: str | None = None
+    selector_score: int | None = None
+    is_finalist: bool = False
 
     explanation_en: str | None = None
     explanation_ka: str | None = None

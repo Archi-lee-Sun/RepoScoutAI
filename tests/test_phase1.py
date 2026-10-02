@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 from state import Candidate
@@ -61,7 +60,7 @@ def test_pipeline_passes_preference_memory(fake_pipeline, monkeypatch):
     assert calls[0].__class__.__name__ == "PreferenceMemory"
 
 
-def test_validator_batch_propagates_temporary_error(monkeypatch):
+def test_validator_batch_propagates_unclassified_error(monkeypatch):
     import nodes.validator as validator
 
     def fail(*_args, **_kwargs):
@@ -69,4 +68,4 @@ def test_validator_batch_propagates_temporary_error(monkeypatch):
     monkeypatch.setattr(validator, "validate_candidate", fail)
 
     with pytest.raises(RuntimeError, match="LLM unavailable"):
-        validator.validate_batch([SimpleNamespace(full_name="owner/repo")], "meta")
+        validator.validate_batch([Candidate("owner/repo", "url", "description", 0, "Python", [])], "meta")
